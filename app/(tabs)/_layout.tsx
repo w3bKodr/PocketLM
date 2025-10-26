@@ -10,8 +10,9 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 export default function TabLayout() {
   const colorScheme = useColorScheme();
 
-  return (
+    return (
     <Tabs
+      initialRouteName="chat"
       screenOptions={{
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         headerShown: false,
