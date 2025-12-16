@@ -1,41 +1,86 @@
 import { getServerUrl } from './config';
 
 function apiBase() {
-  // Keep web proxy behavior if running in browser
-  if (typeof window !== 'undefined') return 'http://localhost:5173';
+  // Always use the configured server URL from runtime config.
+  // The app saves this value in `src/lib/config.ts` (and via localStorage on web).
   return getServerUrl();
 }
 
-export async function listModels() {
-  const url = `${apiBase()}/v1/models`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '<no body>');
-      throw new Error(`listModels failed: ${res.status} ${res.statusText} ${txt}`);
-    }
-    return res.json();
-  } catch (err: any) {
-    throw new Error(`Network error when fetching ${url}: ${err?.message ?? String(err)}`);
+function isWeb() {
+  return typeof window !== 'undefined';
+}
+
+function proxyBase() {
+  return 'http://localhost:5173';
+}
+
+function buildCandidates(paths: string[]) {
+  const server = getServerUrl();
+  if (isWeb()) {
+    const p = proxyBase();
+    return paths.flatMap((pfx) => [
+      { url: `${p}${pfx}`, proxy: true },
+      { url: `${server}${pfx}`, proxy: false },
+    ]);
   }
+  return paths.map((pfx) => ({ url: `${server}${pfx}`, proxy: false }));
+}
+export async function listModels() {
+  // On web, route requests through the local proxy to avoid CORS and pass the
+  // configured server URL in the X-Target header. On native, call the server
+  // URL directly.
+  const server = getServerUrl();
+  const useProxy = typeof window !== 'undefined';
+  const proxyBase = 'http://localhost:5173';
+  const candidates = useProxy
+    ? [
+        { url: `${proxyBase}/api/v0/models`, proxy: true },
+        { url: `${proxyBase}/v1/models`, proxy: true },
+        { url: `${server}/api/v0/models`, proxy: false },
+        { url: `${server}/v1/models`, proxy: false },
+      ]
+    : [{ url: `${server}/api/v0/models`, proxy: false }, { url: `${server}/v1/models`, proxy: false }];
+
+  let lastErr: any = null;
+  for (const c of candidates) {
+    try {
+      const opts: any = {};
+      if (c.proxy) opts.headers = { 'X-Target': server };
+      const res = await fetch(c.url, opts);
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '<no body>');
+        lastErr = new Error(`listModels failed: ${res.status} ${res.statusText} ${txt}`);
+        continue;
+      }
+      return res.json();
+    } catch (err: any) {
+      lastErr = err;
+    }
+  }
+  throw new Error(`listModels: all attempts failed: ${lastErr?.message ?? String(lastErr)}`);
 }
 
 export async function createChatCompletion(model: string, messages: { role: string; content: string }[]) {
-  const url = `${apiBase()}/v1/chat/completions`;
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages }),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '<no body>');
-      throw new Error(`createChatCompletion failed: ${res.status} ${res.statusText} ${txt}`);
+  const paths = ['/api/v0/chat/completions', '/v1/chat/completions'];
+  const candidates = buildCandidates(paths);
+  let lastErr: any = null;
+  const body = JSON.stringify({ model, messages });
+  for (const c of candidates) {
+    try {
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (c.proxy) headers['X-Target'] = getServerUrl();
+      const res = await fetch(c.url, { method: 'POST', headers, body });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '<no body>');
+        lastErr = new Error(`createChatCompletion failed: ${res.status} ${res.statusText} ${txt}`);
+        continue;
+      }
+      return res.json();
+    } catch (err: any) {
+      lastErr = err;
     }
-    return res.json();
-  } catch (err: any) {
-    throw new Error(`Network error when posting ${url}: ${err?.message ?? String(err)}`);
   }
+  throw new Error(`createChatCompletion: all attempts failed: ${lastErr?.message ?? String(lastErr)}`);
 }
 
 /**
@@ -44,17 +89,24 @@ export async function createChatCompletion(model: string, messages: { role: stri
  * endpoints; it returns the first successful response JSON or throws if all attempts fail.
  */
 export async function unloadModel(model: string) {
-  const candidates = [
-    `${apiBase()}/v1/models/${encodeURIComponent(model)}/unload`,
-    `${apiBase()}/v1/models/unload`,
-    `${apiBase()}/v1/unload_model`,
+  const modelEnc = encodeURIComponent(model);
+  const paths = [
+    `/api/v0/models/${modelEnc}/unload`,
+    `/api/v0/models/unload`,
+    `/api/v0/unload_model`,
+    `/v1/models/${modelEnc}/unload`,
+    `/v1/models/unload`,
+    `/v1/unload_model`,
   ];
 
+  const candidates = buildCandidates(paths);
   let lastErr: any = null;
-  for (const url of candidates) {
+  for (const c of candidates) {
     try {
       const body = JSON.stringify({ model });
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (c.proxy) headers['X-Target'] = getServerUrl();
+      const res = await fetch(c.url, { method: 'POST', headers, body });
       if (res.ok) {
         try {
           return await res.json();
@@ -62,7 +114,6 @@ export async function unloadModel(model: string) {
           return { ok: true };
         }
       }
-      // ignore 404 or not implemented; keep trying
       const txt = await res.text().catch(() => '<no body>');
       lastErr = new Error(`unloadModel attempt failed: ${res.status} ${res.statusText} ${txt}`);
     } catch (err: any) {
@@ -73,11 +124,18 @@ export async function unloadModel(model: string) {
 }
 
 export async function testConnectivity() {
-  const url = `${apiBase()}/`;
-  try {
-    const res = await fetch(url);
-    return { ok: res.ok, status: res.status, url: res.url };
-  } catch (err: any) {
-    throw new Error(`Connectivity test failed to ${url}: ${err?.message ?? String(err)}`);
+  const paths = ['/', '/api/v0/models', '/v1/models'];
+  const candidates = buildCandidates(paths);
+  let lastErr: any = null;
+  for (const c of candidates) {
+    try {
+      const headers: any = {};
+      if (c.proxy) headers['X-Target'] = getServerUrl();
+      const res = await fetch(c.url, { method: 'GET', headers });
+      return { ok: res.ok, status: res.status, url: res.url };
+    } catch (err: any) {
+      lastErr = err;
+    }
   }
+  throw new Error(`Connectivity test failed: ${lastErr?.message ?? String(lastErr)}`);
 }

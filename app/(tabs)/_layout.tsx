@@ -1,6 +1,5 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { View, Text } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -10,25 +9,34 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 export default function TabLayout() {
   const colorScheme = useColorScheme();
 
-    return (
+  return (
     <Tabs
       initialRouteName="chat"
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
+        tabBarActiveTintColor: '#2ea6bf',
+        tabBarInactiveTintColor: 'rgba(46, 166, 191, 0.4)',
+        tabBarStyle: {
+          backgroundColor: '#0a0e11',
+          borderTopColor: 'rgba(46, 166, 191, 0.1)',
+          borderTopWidth: 1,
+          height: 80,
+          paddingTop: 8,
+          paddingBottom: 12,
+        },
+        tabBarLabelStyle: {
+          fontSize: 12,
+          fontWeight: '500',
+          marginTop: 2,
+        },
         headerShown: false,
-  tabBarButton: HapticTab,
+        tabBarButton: HapticTab,
       }}>
-      
       <Tabs.Screen
         name="chat"
         options={{
           title: 'Chat',
-          tabBarIcon: () => null,
-          tabBarLabel: ({ color }) => (
-            <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-              <IconSymbol size={20} name="bubble.left.and.bubble.right.fill" color={color} />
-              <Text style={{ color, fontSize: 12 }}>Chat</Text>
-            </View>
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={24} name="bubble.left.and.bubble.right.fill" color={color} />
           ),
         }}
       />
@@ -36,12 +44,8 @@ export default function TabLayout() {
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: () => null,
-          tabBarLabel: ({ color }) => (
-            <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-              <IconSymbol size={20} name="gearshape.fill" color={color} />
-              <Text style={{ color, fontSize: 12 }}>Settings</Text>
-            </View>
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={24} name="gearshape.fill" color={color} />
           ),
         }}
       />

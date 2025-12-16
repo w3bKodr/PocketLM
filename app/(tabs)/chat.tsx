@@ -1,5 +1,11 @@
+import NoModelsNotice from '@/components/no-models';
+import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import { getSelectedModel, subscribeSelectedModel } from '@/src/lib/config';
+import { createChatCompletion, listModels } from '@/src/lib/llmApi';
+import { useLocalSearchParams, Link } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { Button, FlatList, StyleSheet, TextInput, View, Text, Pressable, Platform, Animated } from 'react-native';
+import { Animated, FlatList, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 let ExpoClipboard: any = null;
 try {
   // require dynamically to avoid web type errors
@@ -8,11 +14,6 @@ try {
 } catch (e) {
   ExpoClipboard = null;
 }
-import { useLocalSearchParams } from 'expo-router';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { createChatCompletion } from '@/src/lib/llmApi';
-import { getSelectedModel, subscribeSelectedModel } from '@/src/lib/config';
 
 function MarkdownText({ children, style }: { children: string; style?: any }) {
   // handle fenced code blocks ```lang\n...\n```
@@ -103,7 +104,7 @@ function renderBlocks(md: string, style: any) {
     }
 
     // Table: detect header row with '|' and separator line of dashes
-    if (line.includes('|') && i + 1 < lines.length && /^\s*[:\-\|\s]+$/.test(lines[i + 1])) {
+    if (line.includes('|') && i + 1 < lines.length && /^\s*\|?[\s\-\|:]+\|?\s*$/.test(lines[i + 1])) {
       // split header while stripping only leading/trailing empty cells
       const headerParts = splitRow(line);
       const columnCount = headerParts.length;
@@ -273,6 +274,8 @@ export default function ChatScreen() {
   
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [modelsMissing, setModelsMissing] = useState(false);
+  const [checkingModels, setCheckingModels] = useState(true);
   // line-based sizing: start at 3 lines, grow/shrink by newlines up to 5 lines
   const MIN_LINES = 3;
   const MAX_LINES = 5;
@@ -283,13 +286,32 @@ export default function ChatScreen() {
   const [inputHeight, setInputHeight] = useState<number>(MIN_INPUT_HEIGHT);
   const [inputScrollEnabled, setInputScrollEnabled] = useState(false);
 
-  useEffect(() => {
-    setMessages([{ role: 'system', content: `You are connected to model ${model ?? 'unknown'}` }]);
-  }, [model]);
+  // Removed redundant system message that said which model is connected.
+  // Messages are now preserved across model selection changes.
 
   useEffect(() => {
     const unsub = subscribeSelectedModel((m) => setModel(m));
     return unsub;
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    async function checkModels() {
+      setCheckingModels(true);
+      try {
+        const res = await listModels();
+        const items = Array.isArray(res?.data) ? res.data : [];
+        if (mounted) setModelsMissing(items.length === 0);
+      } catch (e) {
+        if (mounted) setModelsMissing(true);
+      } finally {
+        if (mounted) setCheckingModels(false);
+      }
+    }
+    checkModels();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   async function send() {
@@ -321,25 +343,77 @@ export default function ChatScreen() {
       setSending(false);
     }
   }
+    // If we couldn't find any models (or couldn't reach the server) show a centered notice
+    if (!checkingModels && modelsMissing) {
+      return <NoModelsNotice onRetry={async () => {
+        setCheckingModels(true);
+        try {
+          const res = await listModels();
+          const items = Array.isArray(res?.data) ? res.data : [];
+          setModelsMissing(items.length === 0);
+        } catch (e) {
+          setModelsMissing(true);
+        } finally {
+          setCheckingModels(false);
+        }
+      }} />;
+    }
 
-  
+  // If no model is selected, show only the modal popup without the chat UI
+  if (!checkingModels && !modelsMissing && !model) {
+    return (
+      <ThemedView style={styles.container as any}>
+        <View style={styles.overlay as any} pointerEvents="box-none">
+          <View style={styles.card as any}>
+            <ThemedText type="title" style={{ textAlign: 'center', marginBottom: 8 }}>No model selected</ThemedText>
+            <ThemedText style={{ textAlign: 'center', color: '#cfcfcf', marginBottom: 16 }}>
+              You don't have a model selected. Open Settings to choose the LM server and model.
+            </ThemedText>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'center' }}>
+              <Link href="/(tabs)/settings" style={styles.link}>
+                <Pressable style={styles.primaryButton as any}>
+                  <ThemedText style={styles.primaryButtonText}>Open Settings</ThemedText>
+                </Pressable>
+              </Link>
+            </View>
+          </View>
+        </View>
+      </ThemedView>
+    );
+  }
 
   return (
     <ThemedView style={styles.container as any}>
-      <ThemedText type="title">Chat - {model ?? 'unknown'}</ThemedText>
+      {/* Premium Header */}
+      <View style={styles.headerContainer as any}>
+        <View>
+          <ThemedText style={styles.headerTitle as any}>Chat</ThemedText>
+          <ThemedText style={styles.headerModel as any}>
+            {model ? `Connected to ${getModelDisplayName(model)}` : 'No model selected'}
+          </ThemedText>
+        </View>
+      </View>
+
+      {/* Messages Area */}
       <FlatList
         data={messages}
         keyExtractor={(_, i) => String(i)}
         renderItem={({ item }) => (
           <View style={[styles.msgRow as any, item.role === 'user' ? styles.userRow as any : styles.assistantRow as any]}>
             <View style={[styles.bubble as any, item.role === 'user' ? styles.userBubble as any : styles.assistantBubble as any]}>
-                <MarkdownText style={item.role === 'user' ? { color: '#ffffff' } : { color: '#ffffff' }}>{item.content}</MarkdownText>
-              </View>
+              <MarkdownText style={item.role === 'user' ? { color: '#ffffff' } : { color: '#e8e9eb' }}>{item.content}</MarkdownText>
+            </View>
           </View>
         )}
+        contentContainerStyle={{ paddingTop: 4 }}
       />
 
-      {error && <ThemedText>{error}</ThemedText>}
+      {error && (
+        <View style={styles.errorContainer as any}>
+          <ThemedText style={styles.errorText as any}>{error}</ThemedText>
+        </View>
+      )}
 
       {sending && (
         <View style={[styles.msgRow as any, styles.assistantRow as any]}>
@@ -349,16 +423,16 @@ export default function ChatScreen() {
         </View>
       )}
 
-  <View style={styles.inputRow as any}>
+      {/* Premium Floating Input */}
+      <View style={styles.inputRow as any}>
         <View style={styles.inputWrapper as any}>
           <TextInput
             placeholder="Type your message..."
-            placeholderTextColor="#ffffff"
+            placeholderTextColor="rgba(232, 233, 235, 0.4)"
             value={input}
             multiline
             onChangeText={(text) => {
               setInput(text);
-              // count explicit newline characters as lines
               const newlineCount = text.length === 0 ? 0 : text.split('\n').length;
               const lines = Math.max(MIN_LINES, Math.min(MAX_LINES, Math.max(1, newlineCount)));
               const h = lines * LINE_HEIGHT + VERTICAL_PADDING;
@@ -377,59 +451,636 @@ export default function ChatScreen() {
             textAlignVertical="top"
             scrollEnabled={inputScrollEnabled}
             onContentSizeChange={(e) => {
-              // keep scroll enabled if content exceeds max height (handles wrapped text on some platforms)
               const contentH = e.nativeEvent.contentSize.height || 0;
               setInputScrollEnabled(contentH > MAX_INPUT_HEIGHT || inputScrollEnabled);
             }}
           />
           
-          <Pressable style={styles.sendButton as any} onPress={send} disabled={sending}>
-            {Platform.OS === 'web' ? (
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="22" height="22" fill="currentColor" style={{ color: '#2a2e30' }}>
-                <path d="M38.4 58.9v7.1c0 2.2 1.8 3.9 3.9 3.9L57.6 58v28.7c0 2.2 2.3 3.2 4.4 3.2h4c2.2 0 3.9-1.8 3.9-3.9V58l15.8 11.9c2.2 0 3.9-1.8 3.9-3.9v-7.1L64 32.2 38.4 58.9z" />
-              </svg>
-            ) : (
-              <Text style={styles.sendIcon as any}>{'▶'}</Text>
-            )}
+          <Pressable style={({ pressed }) => [styles.sendButton as any, pressed && { opacity: 0.8 }]} onPress={send} disabled={sending || !model}>
+            <ThemedText style={styles.sendIcon as any}>↑</ThemedText>
           </Pressable>
         </View>
       </View>
     </ThemedView>
   );
+
+  function getModelDisplayName(modelId: string) {
+    const parts = modelId.split('/');
+    return parts[parts.length - 1];
+  }
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 12 },
-  msgRow: { paddingVertical: 8 },
-  userRow: { alignItems: 'flex-end', paddingRight: 8 },
-  assistantRow: { alignItems: 'flex-start', paddingLeft: 8 },
-  bubble: { maxWidth: '85%', padding: 12, borderRadius: 999, marginVertical: 6 },
-  // messenger-like blue for user's bubble
-  userBubble: { backgroundColor: '#0084FF', alignSelf: 'flex-end', borderTopRightRadius: 4 },
-  assistantBubble: { backgroundColor: 'transparent', alignSelf: 'flex-start' },
-  typingBubble: { backgroundColor: 'transparent' },
+  // ============ CONTAINER ============
+  container: { 
+    flex: 1, 
+    backgroundColor: '#0a0e11',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+
+  // ============ HEADER ============
+  headerContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(46, 166, 191, 0.08)',
+    backgroundColor: 'rgba(10, 14, 17, 0.8)',
+  },
+
+  headerTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 4,
+  },
+
+  headerModel: {
+    fontSize: 13,
+    color: '#6db5d1',
+    fontWeight: '500',
+  },
+
+  // ============ MESSAGE AREA ============
+  msgRow: { 
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
   
-  inputRow: { flexDirection: 'row', alignItems: 'flex-end', paddingTop: 18, paddingHorizontal: 8 },
-  // slightly lighter/teal-tinged input background to stand out from overall page background
-  inputWrapper: { flex: 1, position: 'relative', backgroundColor: '#263238', borderRadius: 20, padding: 0, maxWidth: '100%' },
-  // slightly increased padding for better touch target and visual spacing
-  input: { color: '#ffffff', paddingLeft: 16, paddingRight: 84, paddingTop: 10, paddingBottom: 10, minHeight: 36, maxHeight: 200 },
-  sendButton: { position: 'absolute', right: 10, bottom: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: '#cfcfcf', alignItems: 'center', justifyContent: 'center', zIndex: 2 },
-  sendIcon: { color: '#2a2e30', transform: [{ rotate: '270deg' }] },
-  // darker surrounding box for code blocks
-  codeContainer: { marginVertical: 8, backgroundColor: '#0f1112', borderRadius: 8, borderWidth: 1, borderColor: '#2e3334', padding: 8 },
-  codeHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  codeLabel: { color: '#fff', fontSize: 12, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#3a3f40', backgroundColor: '#232728' },
-  copyButton: { padding: 6, borderRadius: 6, backgroundColor: '#2e3334' },
-  copyIcon: { color: '#fff', fontSize: 12 },
-  codeBlock: { fontFamily: 'monospace', backgroundColor: '#2a2e30', color: '#ffffff', padding: 12, borderRadius: 6 },
-  h1: { fontSize: 22, fontWeight: '700', marginBottom: 8, color: '#fff' },
-  h2: { fontSize: 18, fontWeight: '700', marginBottom: 8, color: '#fff' },
-  h3: { fontSize: 15, fontWeight: '700', marginBottom: 6, color: '#fff' },
-  table: { borderWidth: 1, borderColor: '#2e3334', borderRadius: 6, overflow: 'hidden', marginVertical: 8 },
-  tableRow: { flexDirection: 'row' },
-  tableCell: { flex: 1, padding: 8, borderRightWidth: 1, borderRightColor: '#5e696bff', backgroundColor: '#2a2e30' },
-  tableHeaderCell: { backgroundColor: '#181818', fontWeight: '700' },
-  tableCellText: { color: '#e6e6e6' },
-  tableHeaderText: { color: '#fff' },
+  userRow: { 
+    alignItems: 'flex-end', 
+  },
+  
+  assistantRow: { 
+    alignItems: 'flex-start',
+  },
+  
+  // ============ MESSAGE BUBBLES - Premium Design ============
+  bubble: { 
+    maxWidth: '85%', 
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+    borderRadius: 14,
+    marginVertical: 6,
+  },
+  
+  // User bubble - clean, elevated
+  userBubble: { 
+    backgroundColor: '#2ea6bf',
+    alignSelf: 'flex-end',
+    borderTopRightRadius: 4,
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  
+  // Assistant bubble - subtle depth, soft border
+  assistantBubble: { 
+    backgroundColor: 'rgba(26, 35, 42, 0.7)',
+    borderWidth: 1,
+    borderColor: 'rgba(46, 166, 191, 0.1)',
+    alignSelf: 'flex-start',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  
+  typingBubble: { 
+    backgroundColor: 'rgba(26, 35, 42, 0.7)',
+    borderWidth: 1,
+    borderColor: 'rgba(46, 166, 191, 0.1)',
+  },
+
+  // ============ ERROR DISPLAY ============
+  errorContainer: {
+    marginHorizontal: 16,
+    marginVertical: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(220, 38, 38, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(220, 38, 38, 0.3)',
+  },
+
+  errorText: {
+    color: '#ff6b6b',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  
+  // ============ INPUT AREA - Floating Pill Design ============
+  inputRow: { 
+    flexDirection: 'row', 
+    alignItems: 'flex-end', 
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    paddingTop: 12,
+    backgroundColor: '#0a0e11',
+  },
+  
+  // Floating input container with premium elevation
+  inputWrapper: { 
+    flex: 1, 
+    position: 'relative', 
+    backgroundColor: 'rgba(26, 35, 42, 0.8)',
+    borderRadius: 24, // pill-shaped
+    borderWidth: 1,
+    borderColor: 'rgba(46, 166, 191, 0.15)',
+    overflow: 'hidden',
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  
+  // Input field - clean, calm
+  input: { 
+    color: '#e8e9eb', 
+    paddingLeft: 18,
+    paddingRight: 90,
+    paddingTop: 12,
+    paddingBottom: 12,
+    minHeight: 40,
+    maxHeight: 200,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  
+  // ============ CODE BLOCKS - Premium Presentation ============
+  codeContainer: { 
+    marginVertical: 10, 
+    backgroundColor: 'rgba(15, 19, 23, 0.6)',
+    borderRadius: 12,
+    borderWidth: 1, 
+    borderColor: 'rgba(46, 166, 191, 0.12)',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  
+  codeHeader: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(20, 25, 30, 0.9)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(46, 166, 191, 0.1)',
+  },
+  
+  codeLabel: { 
+    color: '#6db5d1', 
+    fontSize: 11,
+    fontWeight: '600',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(46, 166, 191, 0.1)',
+    borderWidth: 0.8,
+    borderColor: 'rgba(46, 166, 191, 0.25)',
+  },
+  
+  copyButton: { 
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: 'rgba(46, 166, 191, 0.1)',
+  },
+  
+  copyIcon: { 
+    color: '#6db5d1', 
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  
+  codeBlock: { 
+    fontFamily: 'monospace', 
+    backgroundColor: 'rgba(20, 25, 30, 0.7)',
+    color: '#e8e9eb', 
+    padding: 14,
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  
+  // ============ MARKDOWN TYPOGRAPHY - Refined Hierarchy ============
+  h1: { 
+    fontSize: 20, 
+    fontWeight: '700', 
+    marginBottom: 12,
+    marginTop: 6,
+    color: '#ffffff',
+    lineHeight: 26,
+  },
+  
+  h2: { 
+    fontSize: 17, 
+    fontWeight: '700', 
+    marginBottom: 10,
+    marginTop: 4,
+    color: '#ffffff',
+    lineHeight: 23,
+  },
+  
+  h3: { 
+    fontSize: 15, 
+    fontWeight: '600', 
+    marginBottom: 8,
+    marginTop: 3,
+    color: '#ffffff',
+    lineHeight: 20,
+  },
+  
+  // ============ TABLES ============
+  table: { 
+    borderWidth: 1, 
+    borderColor: 'rgba(46, 166, 191, 0.1)', 
+    borderRadius: 10, 
+    overflow: 'hidden', 
+    marginVertical: 10,
+  },
+  
+  tableRow: { 
+    flexDirection: 'row' 
+  },
+  
+  tableCell: { 
+    flex: 1, 
+    padding: 11,
+    borderRightWidth: 1, 
+    borderRightColor: 'rgba(46, 166, 191, 0.08)',
+    backgroundColor: 'rgba(26, 35, 42, 0.5)',
+  },
+  
+  tableHeaderCell: { 
+    backgroundColor: 'rgba(20, 25, 30, 0.8)',
+    fontWeight: '700',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(46, 166, 191, 0.12)',
+  },
+  
+  tableCellText: { 
+    color: '#e8e9eb',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  
+  tableHeaderText: { 
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  
+  // ============ MODAL OVERLAY ============
+  overlay: { 
+    position: 'absolute', 
+    left: 0, 
+    right: 0, 
+    top: 0, 
+    bottom: 0, 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    padding: 20,
+    backgroundColor: 'rgba(10, 14, 17, 0.6)',
+  },
+  
+  card: {
+    width: '100%',
+    maxWidth: 720,
+    backgroundColor: 'rgba(26, 35, 42, 0.95)',
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(46, 166, 191, 0.12)',
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+  
+  link: { 
+    textDecorationLine: 'none' 
+  },
+  
+  primaryButton: {
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+    borderRadius: 9,
+    backgroundColor: '#2ea6bf',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  
+  primaryButtonText: {
+    color: '#022022',
+    fontWeight: '600',
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
+  
+  // ============ MESSAGE BUBBLES - Premium Design ============
+  bubble: { 
+    maxWidth: '85%', 
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+    borderRadius: 14,
+    marginVertical: 6,
+  },
+  
+  // User bubble - clean, elevated
+  userBubble: { 
+    backgroundColor: '#2ea6bf',
+    alignSelf: 'flex-end',
+    borderTopRightRadius: 4,
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  
+  // Assistant bubble - subtle depth, soft border
+  assistantBubble: { 
+    backgroundColor: 'rgba(26, 35, 42, 0.7)',
+    borderWidth: 1,
+    borderColor: 'rgba(46, 166, 191, 0.1)',
+    alignSelf: 'flex-start',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  
+  typingBubble: { 
+    backgroundColor: 'rgba(26, 35, 42, 0.7)',
+    borderWidth: 1,
+    borderColor: 'rgba(46, 166, 191, 0.1)',
+  },
+  
+  // ============ INPUT AREA - Floating Pill Design ============
+  inputRow: { 
+    flexDirection: 'row', 
+    alignItems: 'flex-end', 
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    paddingTop: 12,
+    backgroundColor: '#0a0e11',
+  },
+  
+  // Floating input container with premium elevation
+  inputWrapper: { 
+    flex: 1, 
+    position: 'relative', 
+    backgroundColor: 'rgba(26, 35, 42, 0.8)',
+    borderRadius: 24, // pill-shaped
+    borderWidth: 1,
+    borderColor: 'rgba(46, 166, 191, 0.15)',
+    overflow: 'hidden',
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  
+  // Input field - clean, calm
+  input: { 
+    color: '#e8e9eb', 
+    paddingLeft: 18,
+    paddingRight: 90,
+    paddingTop: 12,
+    paddingBottom: 12,
+    minHeight: 40,
+    maxHeight: 200,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  
+  // Send button - minimal, premium
+  sendButton: { 
+    position: 'absolute', 
+    right: 8, 
+    top: '50%',
+    marginTop: -18,
+    width: 36, 
+    height: 36, 
+    borderRadius: 18, 
+    backgroundColor: '#2ea6bf', 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    zIndex: 2,
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  
+  sendIcon: { 
+    color: '#022022', 
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  
+  // ============ CODE BLOCKS - Premium Presentation ============
+  codeContainer: { 
+    marginVertical: 10, 
+    backgroundColor: 'rgba(15, 19, 23, 0.6)',
+    borderRadius: 12,
+    borderWidth: 1, 
+    borderColor: 'rgba(46, 166, 191, 0.12)',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  
+  codeHeader: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(20, 25, 30, 0.9)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(46, 166, 191, 0.1)',
+  },
+  
+  codeLabel: { 
+    color: '#6db5d1', 
+    fontSize: 11,
+    fontWeight: '600',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(46, 166, 191, 0.1)',
+    borderWidth: 0.8,
+    borderColor: 'rgba(46, 166, 191, 0.25)',
+  },
+  
+  copyButton: { 
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: 'rgba(46, 166, 191, 0.1)',
+  },
+  
+  copyIcon: { 
+    color: '#6db5d1', 
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  
+  codeBlock: { 
+    fontFamily: 'monospace', 
+    backgroundColor: 'rgba(20, 25, 30, 0.7)',
+    color: '#e8e9eb', 
+    padding: 14,
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  
+  // ============ MARKDOWN TYPOGRAPHY - Refined Hierarchy ============
+  h1: { 
+    fontSize: 20, 
+    fontWeight: '700', 
+    marginBottom: 12,
+    marginTop: 6,
+    color: '#ffffff',
+    lineHeight: 26,
+  },
+  
+  h2: { 
+    fontSize: 17, 
+    fontWeight: '700', 
+    marginBottom: 10,
+    marginTop: 4,
+    color: '#ffffff',
+    lineHeight: 23,
+  },
+  
+  h3: { 
+    fontSize: 15, 
+    fontWeight: '600', 
+    marginBottom: 8,
+    marginTop: 3,
+    color: '#ffffff',
+    lineHeight: 20,
+  },
+  
+  // ============ TABLES ============
+  table: { 
+    borderWidth: 1, 
+    borderColor: 'rgba(46, 166, 191, 0.1)', 
+    borderRadius: 10, 
+    overflow: 'hidden', 
+    marginVertical: 10,
+  },
+  
+  tableRow: { 
+    flexDirection: 'row' 
+  },
+  
+  tableCell: { 
+    flex: 1, 
+    padding: 11,
+    borderRightWidth: 1, 
+    borderRightColor: 'rgba(46, 166, 191, 0.08)',
+    backgroundColor: 'rgba(26, 35, 42, 0.5)',
+  },
+  
+  tableHeaderCell: { 
+    backgroundColor: 'rgba(20, 25, 30, 0.8)',
+    fontWeight: '700',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(46, 166, 191, 0.12)',
+  },
+  
+  tableCellText: { 
+    color: '#e8e9eb',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  
+  tableHeaderText: { 
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  
+  // ============ MODAL OVERLAY ============
+  overlay: { 
+    position: 'absolute', 
+    left: 0, 
+    right: 0, 
+    top: 0, 
+    bottom: 0, 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    padding: 20,
+    backgroundColor: 'rgba(10, 14, 17, 0.6)',
+  },
+  
+  card: {
+    width: '100%',
+    maxWidth: 720,
+    backgroundColor: 'rgba(26, 35, 42, 0.95)',
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(46, 166, 191, 0.12)',
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+  
+  link: { 
+    textDecorationLine: 'none' 
+  },
+  
+  primaryButton: {
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+    borderRadius: 9,
+    backgroundColor: '#2ea6bf',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#2ea6bf',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  
+  primaryButtonText: {
+    color: '#022022',
+    fontWeight: '600',
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
 });
